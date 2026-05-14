@@ -29,12 +29,26 @@ const LLMClaw = (() => {
   function _send(type, payload) {
     return new Promise((resolve, reject) => {
       try {
+        // Check if extension context is still valid
+        if (!chrome.runtime?.id) {
+          reject(new Error('Extension context invalidated — please reload the page'));
+          return;
+        }
         chrome.runtime.sendMessage({ type, ...payload }, (response) => {
           if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message));
+            const errMsg = chrome.runtime.lastError.message || '';
+            if (errMsg.includes('Receiving end does not exist') || errMsg.includes('message port closed')) {
+              reject(new Error('Service worker not ready — try again in a few seconds'));
+            } else {
+              reject(new Error(errMsg));
+            }
             return;
           }
-          if (response && response.error) {
+          if (!response) {
+            reject(new Error('No response from service worker'));
+            return;
+          }
+          if (response.error) {
             reject(new Error(response.error));
             return;
           }
@@ -57,8 +71,22 @@ const LLMClaw = (() => {
     if (!Array.isArray(messages) || !messages.length) {
       throw new Error('LLMClaw.chat: messages array is required');
     }
-    const result = await _send('llm:chat', { messages, options: options || {} });
-    return result;
+    try {
+      const result = await _send('llm:chat', { messages, options: options || {} });
+      return result;
+    } catch (err) {
+      // Provide helpful error messages
+      if (err.message.includes('API key missing')) {
+        throw new Error('Please configure your API key in Settings → LLM Settings. Go to Options page and enter your API key.');
+      }
+      if (err.message.includes('All LLM providers failed') || err.message.includes('Failed to fetch')) {
+        if (MF.getConfig('llmProvider') === 'ollama') {
+          throw new Error('Ollama is not running. Start Ollama locally: `ollama serve` then `ollama run llama3`');
+        }
+        throw new Error('LLM provider connection failed. Check your API key and internet connection.');
+      }
+      throw err;
+    }
   }
 
   // ── analyze(pair, analysis) ────────────────────────────────────────

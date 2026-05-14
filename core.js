@@ -9,7 +9,7 @@ const MF = (() => {
   'use strict';
 
   // ── Version ────────────────────────────────────────────────────────
-  const VERSION = '1.3.0';
+  const VERSION = '1.4.0';
 
   // ── Default Configuration ──────────────────────────────────────────
   const DEFAULTS = {

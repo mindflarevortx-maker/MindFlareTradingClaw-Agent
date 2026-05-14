@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "MindFlare TradingClaw Agent",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "AI-powered trading assistant for market-qx.trade — WebSocket sniffing, technical analysis, LLM signals, auto-pilot trading with martingale, backtesting, and self-improvement.",
   "permissions": [
     "storage",

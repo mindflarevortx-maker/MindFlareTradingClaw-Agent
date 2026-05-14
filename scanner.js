@@ -32,18 +32,27 @@ const Scanner = (() => {
   const SIO_OPEN = '0', SIO_CLOSE = '1', SIO_PING = '2', SIO_PONG = '3';
   const SIO_MSG = '4', SIO_UPGRADE = '5', SIO_NOOP = '6';
 
-  // Known event name categories
+  // Known event name categories — includes Quotex/market-qx.trade specific events
   const TICK_EVENTS = new Set([
     'tick', 'quote', 'price', 'price-update', 'spot',
     'tickData', 'priceChange', 'updatePrice', 'trade',
+    // Quotex/market-qx.trade specific
+    'quotes', 'quoteUpdate', 'instrument_price', 'spotPrice',
+    'instrument_price_changed', 'priceChanged', 'update',
   ]);
   const CANDLE_EVENTS = new Set([
     'candle', 'candles', 'candleUpdate', 'ohlcv', 'ohlc',
     'candleData', 'kline', 'bar',
+    // Quotex/market-qx.trade specific
+    'candlesData', 'chartData', 'chart', 'instrument_candles',
+    'candleChanged', 'candleClosed',
   ]);
   const ASSET_EVENTS = new Set([
     'asset', 'assets', 'instruments', 'pairs', 'symbols',
     'underlying', 'instrumentsList', 'assetList',
+    // Quotex/market-qx.trade specific
+    'instrumentsUpdated', 'instrument_list', 'assetsUpdated',
+    'assetChanged', 'instrument_update', 'balances',
   ]);
 
   // DOM selectors for fallback polling (ordered by specificity)
@@ -323,13 +332,16 @@ const Scanner = (() => {
     if (!d || typeof d !== 'object') return null;
     return d.pair || d.symbol || d.instrument || d.asset || d.name ||
            d.ticker || d.underlying || d.active_id || d.asset_id || d.s ||
+           d.instrumentId || d.instrument_id || d.active_id || d.asset_name ||
+           (typeof d.id === 'string' ? d.id : null) ||
            (d.instrumentId ? String(d.instrumentId) : null) || null;
   }
 
   function extractPrice(d) {
     if (!d || typeof d !== 'object') return null;
     const raw = d.price || d.value || d.last || d.lastPrice || d.close ||
-                d.c || d.rate || d.quote || d.currentPrice || d.spot || d.p || null;
+                d.c || d.rate || d.quote || d.currentPrice || d.spot || d.p ||
+                d.current_price || d.bid || d.ask || d.mid || d.mid_price || null;
     if (raw === null) return null;
     const n = parseFloat(raw);
     return (isNaN(n) || n <= 0) ? null : n;
@@ -353,7 +365,9 @@ const Scanner = (() => {
   function extractPayout(d) {
     if (!d || typeof d !== 'object') return 0;
     const raw = d.payout || d.profit || d.profitPercent || d.payoutPercent ||
-                d.yield || d.return || d.reward || d.payment || null;
+                d.yield || d.return || d.reward || d.payment ||
+                d.profit_percent || d.payout_percent || d.profit_percentage ||
+                (d.options && d.options.payout) || null;
     if (raw === null) return 0;
     const n = parseFloat(raw);
     return isNaN(n) ? 0 : n;
@@ -508,6 +522,22 @@ const Scanner = (() => {
           MF.state.wsConnected = false;
           MF.log('warn', 'Scanner: WS error', msg.url);
           MF.bus.emit('ws:disconnected', { error: true });
+          break;
+        case 'ws_send':
+          // Capture outgoing WS messages for trade tracking
+          try {
+            if (typeof msg.data === 'string' && msg.data.startsWith('42')) {
+              const frames = decodeSioFrame(msg.data);
+              for (const f of frames) {
+                if (f.event && f.eventData) {
+                  MF.bus.emit('ws:outgoing', { event: f.event, data: f.eventData, url: msg.url });
+                }
+              }
+            }
+          } catch (_) {}
+          break;
+        case 'fetch_load':
+          handleXhrLoad(msg);
           break;
         case 'hook_ready':
           MF.state.hookReady = true;
