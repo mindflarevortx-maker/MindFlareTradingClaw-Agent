@@ -1,0 +1,419 @@
+/**
+ * service-worker.js  —  Background Service Worker (MV3)
+ *
+ * MindFlareClaw-AGENT v2.0
+ *
+ * Roles:
+ *   1. LLM HTTP proxy (CSP bypass for content scripts)
+ *   2. Ollama Cloud API key auto-rotation with cooldown
+ *   3. Screenshot capture for vision
+ *   4. Cross-tab message bus
+ *   5. Notification dispatch
+ *
+ * Supports 11 LLM providers:
+ *   Ollama Cloud, OpenAI, OpenRouter, Anthropic, Gemini, Grok,
+ *   OpenCode, Zia, Moonshot, Qwen, OpenAI-Compatible
+ */
+
+'use strict';
+
+const log = (...a) => console.log('[MFC-bg]', ...a);
+
+// =================================================================
+// LLM PROVIDER DEFINITIONS — 11 providers, all request shapes
+// =================================================================
+const PROVIDER_DEFS = {
+  ollama: {
+    url: () => 'https://api.ollama.com/api/chat',
+    headers: (k) => ({ Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' }),
+    body: (msgs, m, opts) => ({ model: m, messages: msgs, stream: false, options: { temperature: opts.temperature ?? 0.2, num_predict: opts.max_tokens ?? 600 } }),
+    parse: (j) => j?.message?.content || j?.choices?.[0]?.message?.content || '',
+  },
+  openai: {
+    url: () => 'https://api.openai.com/v1/chat/completions',
+    headers: (k) => ({ Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' }),
+    body: (msgs, m, opts) => ({ model: m, messages: msgs, temperature: opts.temperature ?? 0.2, max_tokens: opts.max_tokens ?? 600 }),
+    parse: (j) => j?.choices?.[0]?.message?.content || '',
+  },
+  openrouter: {
+    url: () => 'https://openrouter.ai/api/v1/chat/completions',
+    headers: (k) => ({ Authorization: `Bearer ${k}`, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://market-qx.trade', 'X-Title': 'MFC Agent' }),
+    body: (msgs, m, opts) => ({ model: m, messages: msgs, temperature: opts.temperature ?? 0.2, max_tokens: opts.max_tokens ?? 600 }),
+    parse: (j) => j?.choices?.[0]?.message?.content || '',
+  },
+  anthropic: {
+    url: () => 'https://api.anthropic.com/v1/messages',
+    headers: (k) => ({ 'x-api-key': k, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json', 'anthropic-dangerous-direct-browser-access': 'true' }),
+    body: (msgs, m, opts) => {
+      const sys = msgs.filter(x => x.role === 'system').map(x => contentToText(x.content)).join('\n\n');
+      const rest = msgs.filter(x => x.role !== 'system').map(x => ({
+        role: x.role === 'assistant' ? 'assistant' : 'user',
+        content: anthropicContent(x.content),
+      }));
+      return { model: m, system: sys || undefined, messages: rest, temperature: opts.temperature ?? 0.2, max_tokens: opts.max_tokens ?? 600 };
+    },
+    parse: (j) => (j?.content || []).map(c => c.text || '').join('') || '',
+  },
+  gemini: {
+    url: (m, k) => `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${encodeURIComponent(k)}`,
+    headers: () => ({ 'Content-Type': 'application/json' }),
+    body: (msgs, m, opts) => {
+      const sys = msgs.filter(x => x.role === 'system').map(x => contentToText(x.content)).join('\n\n');
+      const contents = msgs.filter(x => x.role !== 'system').map(x => ({
+        role: x.role === 'assistant' ? 'model' : 'user',
+        parts: geminiParts(x.content),
+      }));
+      const req = { contents, generationConfig: { temperature: opts.temperature ?? 0.2, maxOutputTokens: opts.max_tokens ?? 600 } };
+      if (sys) req.systemInstruction = { parts: [{ text: sys }] };
+      return req;
+    },
+    parse: (j) => j?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '',
+  },
+  grok: {
+    url: () => 'https://api.x.ai/v1/chat/completions',
+    headers: (k) => ({ Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' }),
+    body: (msgs, m, opts) => ({ model: m, messages: msgs, temperature: opts.temperature ?? 0.2, max_tokens: opts.max_tokens ?? 600 }),
+    parse: (j) => j?.choices?.[0]?.message?.content || '',
+  },
+  opencode: {
+    url: () => 'https://api.opencode.ai/v1/chat/completions',
+    headers: (k) => ({ Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' }),
+    body: (msgs, m, opts) => ({ model: m, messages: msgs, temperature: opts.temperature ?? 0.2, max_tokens: opts.max_tokens ?? 600 }),
+    parse: (j) => j?.choices?.[0]?.message?.content || '',
+  },
+  zia: {
+    url: () => 'https://api.zia.ai/v1/chat/completions',
+    headers: (k) => ({ Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' }),
+    body: (msgs, m, opts) => ({ model: m, messages: msgs, temperature: opts.temperature ?? 0.2, max_tokens: opts.max_tokens ?? 600 }),
+    parse: (j) => j?.choices?.[0]?.message?.content || '',
+  },
+  moonshot: {
+    url: () => 'https://api.moonshot.cn/v1/chat/completions',
+    headers: (k) => ({ Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' }),
+    body: (msgs, m, opts) => ({ model: m, messages: msgs, temperature: opts.temperature ?? 0.2, max_tokens: opts.max_tokens ?? 600 }),
+    parse: (j) => j?.choices?.[0]?.message?.content || '',
+  },
+  qwen: {
+    url: () => 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+    headers: (k) => ({ Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' }),
+    body: (msgs, m, opts) => ({ model: m, messages: msgs, temperature: opts.temperature ?? 0.2, max_tokens: opts.max_tokens ?? 600 }),
+    parse: (j) => j?.choices?.[0]?.message?.content || '',
+  },
+  openai_compat: {
+    url: (m, k, opts) => opts?.baseUrl || 'https://api.openai.com/v1/chat/completions',
+    headers: (k) => ({ Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' }),
+    body: (msgs, m, opts) => ({ model: m, messages: msgs, temperature: opts.temperature ?? 0.2, max_tokens: opts.max_tokens ?? 600 }),
+    parse: (j) => j?.choices?.[0]?.message?.content || '',
+  },
+};
+
+// =================================================================
+// Content format helpers
+// =================================================================
+const contentToText = (c) => Array.isArray(c) ? c.filter(p => p.type === 'text').map(p => p.text).join('\n') : (c || '');
+
+const splitDataUrl = (u) => {
+  const m = String(u || '').match(/^data:([^;]+);base64,(.+)$/);
+  return m ? { mediaType: m[1], data: m[2] } : null;
+};
+
+const anthropicContent = (c) => Array.isArray(c)
+  ? c.map(p => p.type === 'image'
+    ? { type: 'image', source: (() => { const s = splitDataUrl(p.dataUrl); return s ? { type:'base64', media_type:s.mediaType, data:s.data } : null; })() }
+    : { type: 'text', text: p.text || '' }).filter(p => p.source !== null)
+  : [{ type: 'text', text: c || '' }];
+
+const geminiParts = (c) => Array.isArray(c)
+  ? c.map(p => p.type === 'image'
+    ? (() => { const s = splitDataUrl(p.dataUrl); return s ? { inline_data: { mime_type: s.mediaType, data: s.data } } : null; })()
+    : { text: p.text || '' }).filter(Boolean)
+  : [{ text: c || '' }];
+
+const normaliseMessages = (provider, msgs) => {
+  if (provider === 'anthropic' || provider === 'gemini') return msgs;
+  return msgs.map(m => ({ role: m.role, content: m.content }));
+};
+
+// =================================================================
+// Single LLM call
+// =================================================================
+async function callLLMOnce({ provider, apiKey, model, messages, opts }) {
+  const def = PROVIDER_DEFS[provider];
+  if (!def) throw new Error('unknown provider: ' + provider);
+  const url = provider === 'openai_compat' ? (opts?.baseUrl || def.url()) : def.url(model, apiKey);
+  const normalised = normaliseMessages(provider, messages);
+  const body = JSON.stringify(def.body(normalised, model, opts));
+  const headers = def.headers(apiKey);
+  const r = await fetch(url, { method: 'POST', headers, body });
+  const txt = await r.text();
+  if (!r.ok) {
+    const e = new Error(`HTTP ${r.status}: ${txt.slice(0, 200)}`);
+    e.status = r.status;
+    throw e;
+  }
+  let j;
+  try { j = JSON.parse(txt); } catch (_) { return txt; }
+  return def.parse(j) || txt;
+}
+
+// =================================================================
+// OLLAMA KEY AUTO-ROTATION with cooldown
+// =================================================================
+// Ollama keys are loaded from chrome.storage at runtime. Configure via Options page.
+const OLLAMA_KEYS = [];
+
+async function callLLM({ provider, apiKeys, model, messages, opts = {} }) {
+  // Ollama key rotation
+  if (provider === 'ollama') {
+    const keys = (Array.isArray(apiKeys?.ollama) && apiKeys.ollama.length > 0) ? apiKeys.ollama : OLLAMA_KEYS;
+    const store = await chrome.storage.local.get(['ollamaKeyIdx', 'ollamaCooldown']);
+    let idx = store.ollamaKeyIdx || 0;
+    const cd = store.ollamaCooldown || {};
+    const now = Date.now();
+    const tries = keys.length;
+    let lastErr;
+    for (let i = 0; i < tries; i++) {
+      const k = keys[(idx + i) % keys.length];
+      const pfx = k.slice(0, 8);
+      if ((cd[pfx] || 0) > now) continue; // key on cooldown
+      try {
+        const r = await callLLMOnce({ provider, apiKey: k, model, messages, opts });
+        await chrome.storage.local.set({ ollamaKeyIdx: (idx + i) % keys.length });
+        return r;
+      } catch (e) {
+        lastErr = e;
+        if (e.status === 429 || e.status === 402) {
+          cd[pfx] = now + 60_000; // 1 min cooldown on rate-limit
+          await chrome.storage.local.set({ ollamaCooldown: cd });
+          continue;
+        }
+        if (e.status >= 500) continue; // retry on server error
+        throw e;
+      }
+    }
+    throw lastErr || new Error('all ollama keys exhausted/on cooldown');
+  }
+
+  // Single key for non-ollama providers
+  async function tryProvider(prov, key) {
+    return callLLMOnce({ provider: prov, apiKey: key, model, messages, opts });
+  }
+
+  // Multi-provider fallback chain
+  const fallbacks = opts.fallbackProviders || [];
+  const primaryKey = (apiKeys?.[provider] && (Array.isArray(apiKeys[provider]) ? apiKeys[provider][0] : apiKeys[provider])) || '';
+
+  if (!primaryKey && provider !== 'openai_compat') {
+    // Try fallbacks if primary has no key
+    for (const fb of fallbacks) {
+      const fk = (apiKeys?.[fb] && (Array.isArray(apiKeys[fb]) ? apiKeys[fb][0] : apiKeys[fb])) || '';
+      if (!fk) continue;
+      try { return await tryProvider(fb, fk); } catch (_) {}
+    }
+    throw new Error('no API key for ' + provider);
+  }
+
+  try {
+    return await tryProvider(provider, primaryKey);
+  } catch (primaryErr) {
+    // Primary failed — try fallback chain
+    for (const fb of fallbacks) {
+      const fk = (apiKeys?.[fb] && (Array.isArray(apiKeys[fb]) ? apiKeys[fb][0] : apiKeys[fb])) || '';
+      if (!fk) continue;
+      try { return await tryProvider(fb, fk); } catch (_) {}
+    }
+    throw primaryErr;
+  }
+}
+
+// =================================================================
+// DEFAULT CONFIG
+// =================================================================
+const DEFAULTS = {
+  llmProvider: 'ollama',
+  llmModel: 'gemma4:31b',
+  ollamaBaseUrl: 'https://api.ollama.com',
+  openrouterKey: '',
+  openaiKey: '',
+  anthropicKey: '',
+  geminiKey: '',
+  grokKey: '',
+  opencodeKey: '',
+  ziaKey: '',
+  moonshotKey: '',
+  qwenKey: '',
+  openaiCompatKey: '',
+  openaiCompatBaseUrl: '',
+  fallbackProviders: [],
+  llmTemperature: 0.2,
+  llmMaxTokens: 600,
+  autoPilot: false,
+  baseInvestment: 1,
+  minPayout: 70,
+  maxInvestment: 100,
+  martingaleEnabled: true,
+  martingaleSteps: 3,
+  martingaleMultiplier: 2.0,
+  scanInterval: 2000,
+  domPollFallback: true,
+  historicalLoadEnabled: true,
+  historicalDaysPerPair: 30,
+  selfLearnEnabled: true,
+  maxLessons: 200,
+  debugMode: false,
+  logLevel: 'warn',
+};
+
+async function getConfig() {
+  try {
+    const stored = await chrome.storage.local.get('mf_config');
+    return { ...DEFAULTS, ...(stored.mf_config || {}) };
+  } catch (_) { return { ...DEFAULTS }; }
+}
+
+async function setConfig(updates) {
+  const current = await getConfig();
+  Object.assign(current, updates);
+  await chrome.storage.local.set({ mf_config: current });
+  return current;
+}
+
+// =================================================================
+// Message router
+// =================================================================
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || typeof msg !== 'object') return false;
+
+  // Legacy format: { type: 'llm:chat', messages, options }
+  if (msg.type === 'llm:chat') {
+    (async () => {
+      try {
+        const config = await getConfig();
+        const provider = msg.options?.provider || config.llmProvider || 'ollama';
+        const model = msg.options?.model || config.llmModel || 'gemma4:31b';
+        const apiKeys = {
+          ollama: OLLAMA_KEYS,
+          openrouter: config.openrouterKey || DEFAULTS.openrouterKey,
+          openai: config.openaiKey,
+          anthropic: config.anthropicKey,
+          gemini: config.geminiKey,
+          grok: config.grokKey,
+          opencode: config.opencodeKey,
+          zia: config.ziaKey,
+          moonshot: config.moonshotKey,
+          qwen: config.qwenKey,
+          openai_compat: config.openaiCompatKey,
+        };
+        const fallbackProviders = config.fallbackProviders || DEFAULTS.fallbackProviders;
+        const opts = {
+          temperature: msg.options?.temperature ?? config.llmTemperature ?? 0.2,
+          max_tokens: msg.options?.maxTokens ?? config.llmMaxTokens ?? 600,
+          fallbackProviders,
+          baseUrl: config.openaiCompatBaseUrl || undefined,
+        };
+
+        const reply = await callLLM({ provider, apiKeys, model, messages: msg.messages || [], opts });
+        sendResponse({ text: reply, provider, model });
+      } catch (e) {
+        sendResponse({ error: e.message });
+      }
+    })();
+    return true; // keep channel open
+  }
+
+  // New format: { action: 'llm', payload: { ... } }
+  if (msg.action === 'llm') {
+    (async () => {
+      try {
+        const reply = await callLLM(msg.payload);
+        sendResponse({ ok: true, reply });
+      } catch (e) {
+        sendResponse({ ok: false, error: e.message });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.action === 'captureTab') {
+    chrome.tabs.captureVisibleTab(null, { format: 'png' }, (dataUrl) =>
+      sendResponse(chrome.runtime.lastError ? { ok: false, error: chrome.runtime.lastError.message } : { ok: true, dataUrl }));
+    return true;
+  }
+
+  if (msg.type === 'config:get' || msg.action === 'config:get') {
+    getConfig().then(c => sendResponse(c)).catch(e => sendResponse({ error: e.message }));
+    return true;
+  }
+
+  if (msg.type === 'config:set' || msg.action === 'config:set') {
+    setConfig(msg.updates || msg.payload || {}).then(c => sendResponse({ ok: true, config: c })).catch(e => sendResponse({ error: e.message }));
+    return true;
+  }
+
+  if (msg.action === 'notify' || msg.type === 'notification:show') {
+    chrome.notifications?.create({
+      type: 'basic',
+      iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+      title: msg.title || msg.message?.title || 'MFC Agent',
+      message: String(msg.message || msg.message?.text || '').slice(0, 500),
+    });
+    return false;
+  }
+
+  if (msg.action === 'togglePanel') {
+    chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+      if (tab?.id) chrome.tabs.sendMessage(tab.id, { action: 'togglePanel' });
+    });
+    return false;
+  }
+
+  if (msg.type === 'alarm:set') {
+    const { name, periodInMinutes, delayInMinutes } = msg;
+    if (!name) { sendResponse({ ok: false, error: 'Alarm name required' }); return false; }
+    chrome.alarms.create(name, { periodInMinutes: periodInMinutes || 5, delayInMinutes: delayInMinutes || 1 });
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  return false;
+});
+
+// Keyboard command
+chrome.commands.onCommand.addListener((cmd) => {
+  if (cmd === 'toggle-panel') {
+    chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+      if (tab?.id) chrome.tabs.sendMessage(tab.id, { action: 'togglePanel' });
+    });
+  }
+});
+
+// Chrome Alarms
+chrome.alarms.onAlarm.addListener((alarm) => {
+  switch (alarm.name) {
+    case 'scanner:health':
+      log('Scanner health check');
+      break;
+    case 'candle:cleanup':
+      log('Candle cleanup triggered');
+      break;
+  }
+});
+
+// Extension Install / Update
+chrome.runtime.onInstalled.addListener(async (details) => {
+  if (details.reason === 'install') {
+    await chrome.storage.local.set({ mf_config: DEFAULTS });
+    log('Default config saved on install');
+  }
+  chrome.alarms.create('scanner:health', { periodInMinutes: 5, delayInMinutes: 1 });
+  chrome.alarms.create('candle:cleanup', { periodInMinutes: 30, delayInMinutes: 5 });
+
+  if (details.reason === 'update') {
+    const existing = await getConfig();
+    const merged = { ...DEFAULTS, ...existing };
+    await chrome.storage.local.set({ mf_config: merged });
+    log(`Updated to v${chrome.runtime.getManifest().version}`);
+  }
+});
+
+log('MindFlareClaw service-worker booted');

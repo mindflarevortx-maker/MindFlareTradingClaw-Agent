@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=320">
+  <title>MindFlare TradingClaw</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <!-- Header -->
+  <header class="mf-popup-header">
+    <div class="mf-popup-brand">
+      <span class="mf-popup-logo">MF</span>
+      <div class="mf-popup-title-wrap">
+        <h1 class="mf-popup-title">MindFlare TradingClaw</h1>
+        <span class="mf-popup-version">v1.2.0-beta1</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Quick Status -->
+  <section class="mf-popup-status">
+    <div class="mf-status-row">
+      <span class="mf-status-label">WebSocket</span>
+      <span id="mf-ws-status" class="mf-status-value mf-val-red">Disconnected</span>
+    </div>
+    <div class="mf-status-row">
+      <span class="mf-status-label">Active Pair</span>
+      <span id="mf-active-pair" class="mf-status-value">—</span>
+    </div>
+    <div class="mf-status-row">
+      <span class="mf-status-label">Payout</span>
+      <span id="mf-active-payout" class="mf-status-value">—</span>
+    </div>
+    <div class="mf-status-row">
+      <span class="mf-status-label">Agent</span>
+      <span id="mf-agent-status" class="mf-status-value">Idle</span>
+    </div>
+  </section>
+
+  <hr class="mf-popup-divider">
+
+  <!-- Toggles -->
+  <section class="mf-popup-toggles">
+    <div class="mf-toggle-row">
+      <span class="mf-toggle-label">Auto-Pilot</span>
+      <label class="mf-toggle">
+        <input type="checkbox" id="mf-toggle-autopilot">
+        <span class="mf-toggle-slider"></span>
+      </label>
+    </div>
+    <div class="mf-toggle-row">
+      <span class="mf-toggle-label">Martingale</span>
+      <label class="mf-toggle">
+        <input type="checkbox" id="mf-toggle-martingale">
+        <span class="mf-toggle-slider"></span>
+      </label>
+    </div>
+  </section>
+
+  <hr class="mf-popup-divider">
+
+  <!-- Quick Actions -->
+  <section class="mf-popup-actions">
+    <div class="mf-action-row">
+      <button id="mf-btn-analyze" class="mf-btn mf-btn-primary">Analyze</button>
+      <button id="mf-btn-scan" class="mf-btn mf-btn-secondary">Scan</button>
+    </div>
+    <div class="mf-action-row">
+      <button id="mf-btn-overlay" class="mf-btn mf-btn-overlay">Open Overlay</button>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="mf-popup-footer">
+    <a id="mf-link-options" href="#" class="mf-footer-link">Settings</a>
+    <span class="mf-footer-sep">|</span>
+    <a id="mf-link-reload" href="#" class="mf-footer-link">Reload Tab</a>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>
