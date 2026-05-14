@@ -157,73 +157,104 @@ async function callLLMOnce({ provider, apiKey, model, messages, opts }) {
 }
 
 // =================================================================
-// OLLAMA KEY AUTO-ROTATION with cooldown
+// KEY AUTO-ROTATION with cooldown (ALL providers, not just Ollama)
 // =================================================================
-// Ollama keys are loaded from chrome.storage at runtime. Configure via Options page.
-const OLLAMA_KEYS = [];
+// Keys are loaded from chrome.storage at runtime. Configure via Options page.
 
 async function callLLM({ provider, apiKeys, model, messages, opts = {} }) {
-  // Ollama key rotation
-  if (provider === 'ollama') {
-    const keys = (Array.isArray(apiKeys?.ollama) && apiKeys.ollama.length > 0) ? apiKeys.ollama : OLLAMA_KEYS;
-    const store = await chrome.storage.local.get(['ollamaKeyIdx', 'ollamaCooldown']);
-    let idx = store.ollamaKeyIdx || 0;
-    const cd = store.ollamaCooldown || {};
+  const config = await getConfig();
+  
+  // Get keys for this provider — support both array and single-key formats
+  function getProviderKeys(prov) {
+    // Try array format first (new multi-key support)
+    const arrayKey = prov + 'Keys'; // e.g., 'ollamaKeys', 'openaiKeys'
+    if (Array.isArray(apiKeys?.[prov]) && apiKeys[prov].length > 0) {
+      return apiKeys[prov].filter(k => k && k.trim());
+    }
+    // Fallback to config array
+    if (Array.isArray(config[arrayKey]) && config[arrayKey].length > 0) {
+      return config[arrayKey].filter(k => k && k.trim());
+    }
+    // Try single-key format (backward compat)
+    const singleKey = apiKeys?.[prov] || config[prov + 'Key'] || '';
+    if (singleKey && typeof singleKey === 'string' && singleKey.trim()) {
+      return [singleKey.trim()];
+    }
+    return [];
+  }
+
+  // Try keys for a provider with rotation and cooldown
+  async function tryProviderWithRotation(prov) {
+    const keys = getProviderKeys(prov);
+    if (keys.length === 0) return null; // no keys available
+
+    const storeKey = prov + 'KeyIdx';
+    const cdKey = prov + 'Cooldown';
+    const store = await chrome.storage.local.get([storeKey, cdKey]);
+    let idx = store[storeKey] || 0;
+    const cd = store[cdKey] || {};
     const now = Date.now();
-    const tries = keys.length;
+
     let lastErr;
-    for (let i = 0; i < tries; i++) {
+    for (let i = 0; i < keys.length; i++) {
       const k = keys[(idx + i) % keys.length];
       const pfx = k.slice(0, 8);
       if ((cd[pfx] || 0) > now) continue; // key on cooldown
       try {
-        const r = await callLLMOnce({ provider, apiKey: k, model, messages, opts });
-        await chrome.storage.local.set({ ollamaKeyIdx: (idx + i) % keys.length });
+        // For openai_compat, include baseUrl
+        const callOpts = { ...opts };
+        if (prov === 'openai_compat') {
+          callOpts.baseUrl = config.openaiCompatBaseUrl || opts?.baseUrl || '';
+        }
+        const r = await callLLMOnce({ provider: prov, apiKey: k, model, messages, opts: callOpts });
+        await chrome.storage.local.set({ [storeKey]: (idx + i) % keys.length });
         return r;
       } catch (e) {
         lastErr = e;
         if (e.status === 429 || e.status === 402) {
           cd[pfx] = now + 60_000; // 1 min cooldown on rate-limit
-          await chrome.storage.local.set({ ollamaCooldown: cd });
-          continue;
+          await chrome.storage.local.set({ [cdKey]: cd });
+          continue; // try next key
         }
         if (e.status >= 500) continue; // retry on server error
         throw e;
       }
     }
-    throw lastErr || new Error('all ollama keys exhausted/on cooldown');
+    if (lastErr) throw lastErr;
+    return null;
   }
 
-  // Single key for non-ollama providers
-  async function tryProvider(prov, key) {
-    return callLLMOnce({ provider: prov, apiKey: key, model, messages, opts });
-  }
-
-  // Multi-provider fallback chain
-  const fallbacks = opts.fallbackProviders || [];
-  const primaryKey = (apiKeys?.[provider] && (Array.isArray(apiKeys[provider]) ? apiKeys[provider][0] : apiKeys[provider])) || '';
-
-  if (!primaryKey && provider !== 'openai_compat') {
-    // Try fallbacks if primary has no key
-    for (const fb of fallbacks) {
-      const fk = (apiKeys?.[fb] && (Array.isArray(apiKeys[fb]) ? apiKeys[fb][0] : apiKeys[fb])) || '';
-      if (!fk) continue;
-      try { return await tryProvider(fb, fk); } catch (_) {}
-    }
-    throw new Error('no API key for ' + provider);
-  }
-
+  // Try the primary provider first
   try {
-    return await tryProvider(provider, primaryKey);
+    const result = await tryProviderWithRotation(provider);
+    if (result !== null) return result;
   } catch (primaryErr) {
     // Primary failed — try fallback chain
+    const fallbacks = opts.fallbackProviders || config.fallbackProviders || [];
     for (const fb of fallbacks) {
-      const fk = (apiKeys?.[fb] && (Array.isArray(apiKeys[fb]) ? apiKeys[fb][0] : apiKeys[fb])) || '';
-      if (!fk) continue;
-      try { return await tryProvider(fb, fk); } catch (_) {}
+      if (fb === provider) continue; // skip primary
+      try {
+        const fbResult = await tryProviderWithRotation(fb);
+        if (fbResult !== null) return fbResult;
+      } catch (_) {
+        continue; // try next fallback
+      }
     }
     throw primaryErr;
   }
+
+  // Primary had no keys — try fallbacks
+  const fallbacks = opts.fallbackProviders || config.fallbackProviders || [];
+  for (const fb of fallbacks) {
+    try {
+      const fbResult = await tryProviderWithRotation(fb);
+      if (fbResult !== null) return fbResult;
+    } catch (_) {
+      continue;
+    }
+  }
+
+  throw new Error('no API key configured for ' + provider + ' and all fallbacks failed');
 }
 
 // =================================================================
@@ -233,6 +264,19 @@ const DEFAULTS = {
   llmProvider: 'ollama',
   llmModel: 'gemma4:31b',
   ollamaBaseUrl: 'https://api.ollama.com',
+  // Multi-key arrays (new v2.1 format for rate-limit rotation)
+  ollamaKeys: [],
+  openaiKeys: [],
+  openrouterKeys: [],
+  anthropicKeys: [],
+  geminiKeys: [],
+  grokKeys: [],
+  opencodeKeys: [],
+  ziaKeys: [],
+  moonshotKeys: [],
+  qwenKeys: [],
+  openaiCompatKeys: [],
+  // Single-key fields (backward compat, populated from arrays)
   openrouterKey: '',
   openaiKey: '',
   anthropicKey: '',
@@ -291,18 +335,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const config = await getConfig();
         const provider = msg.options?.provider || config.llmProvider || 'ollama';
         const model = msg.options?.model || config.llmModel || 'gemma4:31b';
+        // Build apiKeys object with both array and single-key formats
         const apiKeys = {
-          ollama: OLLAMA_KEYS,
-          openrouter: config.openrouterKey || DEFAULTS.openrouterKey,
-          openai: config.openaiKey,
-          anthropic: config.anthropicKey,
-          gemini: config.geminiKey,
-          grok: config.grokKey,
-          opencode: config.opencodeKey,
-          zia: config.ziaKey,
-          moonshot: config.moonshotKey,
-          qwen: config.qwenKey,
-          openai_compat: config.openaiCompatKey,
+          ollama: config.ollamaKeys?.length ? config.ollamaKeys : (config.openaiKey ? [config.openaiKey] : []),
+          openai: config.openaiKeys?.length ? config.openaiKeys : (config.openaiKey ? [config.openaiKey] : []),
+          openrouter: config.openrouterKeys?.length ? config.openrouterKeys : (config.openrouterKey ? [config.openrouterKey] : []),
+          anthropic: config.anthropicKeys?.length ? config.anthropicKeys : (config.anthropicKey ? [config.anthropicKey] : []),
+          gemini: config.geminiKeys?.length ? config.geminiKeys : (config.geminiKey ? [config.geminiKey] : []),
+          grok: config.grokKeys?.length ? config.grokKeys : (config.grokKey ? [config.grokKey] : []),
+          opencode: config.opencodeKeys?.length ? config.opencodeKeys : (config.opencodeKey ? [config.opencodeKey] : []),
+          zia: config.ziaKeys?.length ? config.ziaKeys : (config.ziaKey ? [config.ziaKey] : []),
+          moonshot: config.moonshotKeys?.length ? config.moonshotKeys : (config.moonshotKey ? [config.moonshotKey] : []),
+          qwen: config.qwenKeys?.length ? config.qwenKeys : (config.qwenKey ? [config.qwenKey] : []),
+          openai_compat: config.openaiCompatKeys?.length ? config.openaiCompatKeys : (config.openaiCompatKey ? [config.openaiCompatKey] : []),
         };
         const fallbackProviders = config.fallbackProviders || DEFAULTS.fallbackProviders;
         const opts = {

@@ -8,7 +8,7 @@
 const MF = (() => {
   'use strict';
 
-  const VERSION = '2.0.0';
+  const VERSION = '2.1.0';
 
   // Ollama keys are loaded from chrome.storage at runtime. Configure via Options page.
   const OLLAMA_KEYS_DEFAULT = [];
@@ -20,6 +20,18 @@ const MF = (() => {
     llmModel: 'gemma4:31b',
     ollamaBaseUrl: 'https://api.ollama.com',
     ollamaKeys: OLLAMA_KEYS_DEFAULT.slice(),
+    // Multi-key arrays for rate-limit rotation
+    openaiKeys: [],
+    openrouterKeys: [],
+    anthropicKeys: [],
+    geminiKeys: [],
+    grokKeys: [],
+    opencodeKeys: [],
+    ziaKeys: [],
+    moonshotKeys: [],
+    qwenKeys: [],
+    openaiCompatKeys: [],
+    // Single-key backward compat
     openrouterKey: '',
     openaiKey: '',
     anthropicKey: '',

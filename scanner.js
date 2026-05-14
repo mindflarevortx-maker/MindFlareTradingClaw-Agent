@@ -23,20 +23,40 @@ const Scanner = (() => {
     'tick', 'quote', 'price', 'price-update', 'spot', 'tickData',
     'priceChange', 'updatePrice', 'trade', 'quotes', 'quoteUpdate',
     'instrument_price', 'spotPrice', 'instrument_price_changed',
-    'priceChanged', 'update'
+    'priceChanged', 'update',
+    // market-qx.trade specific: quotes/stream carries real-time price ticks
+    'quotes/stream', 'quote'
   ]);
 
   const CANDLE_EVENTS = new Set([
     'candle', 'candles', 'candleUpdate', 'ohlcv', 'ohlc',
     'candleData', 'kline', 'bar', 'candlesData', 'chartData',
-    'chart', 'instrument_candles', 'candleChanged', 'candleClosed'
+    'chart', 'instrument_candles', 'candleChanged', 'candleClosed',
+    // market-qx.trade specific: history/list/v2 returns candle arrays
+    'history/list/v2', 'history/list'
   ]);
 
   const ASSET_EVENTS = new Set([
     'asset', 'assets', 'instruments', 'pairs', 'symbols',
     'underlying', 'instrumentsList', 'assetList', 'instrumentsUpdated',
     'instrument_list', 'assetsUpdated', 'assetChanged',
-    'instrument_update', 'balances'
+    'instrument_update', 'balances',
+    // market-qx.trade specific
+    'instruments/list', 'instruments/update'
+  ]);
+
+  /** market-qx.trade specific events that carry balance/trade data */
+  const BALANCE_EVENTS = new Set([
+    's_balance/list', 'balance/list', 'balance'
+  ]);
+
+  const ORDER_EVENTS = new Set([
+    'orders/opened/list', 'orders/closed/list', 'pending/list',
+    'order', 'trade', 's_authorization'
+  ]);
+
+  const DEPTH_EVENTS = new Set([
+    'depth/change', 'depth/follow'
   ]);
 
   /** Engine.IO packet types */
@@ -1346,7 +1366,74 @@ const Scanner = (() => {
    * This is the shared path for both ws_msg (after decoding) and ws_sio.
    */
   function dispatchSioEvent(event, data, url) {
-    // Tick / price events
+    // ── market-qx.trade specific: instruments/list ────────────────
+    // The instruments/list event contains an array of instrument data.
+    // Format from msgpack: [id, "SYMBOL", "Name", "type", ...payouts, ...]
+    // We need to parse the array and extract pairs/payouts.
+    if (event === 'instruments/list') {
+      processInstrumentsList(data);
+      MF.bus.emit('scanner:sioAsset', { event, data });
+      return;
+    }
+
+    // ── market-qx.trade specific: quotes/stream ──────────────────
+    // quotes/stream carries real-time price data for the active instrument.
+    // The data is often a simple value (price number) or object with price info.
+    if (event === 'quotes/stream') {
+      const price = extractPriceFromStream(data);
+      if (price !== null) {
+        const pair = MF.state.activePair || 'ACTIVE';
+        processTick(price, pair, Date.now());
+      }
+      MF.bus.emit('scanner:sioTick', { event, data });
+      return;
+    }
+
+    // ── market-qx.trade specific: history/list/v2 ────────────────
+    // Returns candle history for a pair. Data is typically an array of
+    // [time, open, high, low, close, volume] or objects.
+    if (event === 'history/list/v2' || event === 'history/list') {
+      processHistoryData(data);
+      MF.bus.emit('scanner:sioCandle', { event, data });
+      return;
+    }
+
+    // ── market-qx.trade specific: s_balance/list ─────────────────
+    if (BALANCE_EVENTS.has(event)) {
+      processBalanceEvent(data);
+      MF.bus.emit('scanner:sioBalance', { event, data });
+      return;
+    }
+
+    // ── market-qx.trade specific: order events ───────────────────
+    if (ORDER_EVENTS.has(event)) {
+      processOrderEvent(event, data);
+      MF.bus.emit('scanner:sioOrder', { event, data });
+      return;
+    }
+
+    // ── market-qx.trade specific: depth/change ───────────────────
+    if (DEPTH_EVENTS.has(event)) {
+      MF.bus.emit('scanner:sioDepth', { event, data });
+      return;
+    }
+
+    // ── market-qx.trade specific: instruments/update ─────────────
+    // Sent when user switches instrument. Contains the new instrument ID.
+    if (event === 'instruments/update') {
+      processInstrumentUpdate(data);
+      MF.bus.emit('scanner:sioAsset', { event, data });
+      return;
+    }
+
+    // ── market-qx.trade specific: s_authorization ────────────────
+    if (event === 's_authorization') {
+      MF.log('info', '[Scanner] Authorization confirmed by server');
+      MF.bus.emit('scanner:authorized', { event, data });
+      return;
+    }
+
+    // ── Generic tick / price events ───────────────────────────────
     if (TICK_EVENTS.has(event)) {
       const price = extractPrice(data);
       if (price !== null) {
@@ -1358,7 +1445,7 @@ const Scanner = (() => {
       return;
     }
 
-    // Candle events
+    // ── Generic candle events ─────────────────────────────────────
     if (CANDLE_EVENTS.has(event)) {
       const pair = extractPair(data) || MF.state.activePair;
       const code = pair ? MF.codeFromPair(pair) : null;
@@ -1367,7 +1454,7 @@ const Scanner = (() => {
       return;
     }
 
-    // Asset events
+    // ── Generic asset events ──────────────────────────────────────
     if (ASSET_EVENTS.has(event)) {
       processAssetEvent(data);
       MF.bus.emit('scanner:sioAsset', { event, data });
@@ -1376,6 +1463,265 @@ const Scanner = (() => {
 
     // Any other event — emit generically
     MF.bus.emit('scanner:sioEvent', { event, data, url });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  MARKET-QX.TRADE SPECIFIC EVENT HANDLERS
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /**
+   * Process instruments/list from market-qx.trade.
+   * The data from msgpack decode is a large array of instrument entries.
+   * Each entry is an array: [id, "SYMBOL", "DisplayName", "type",
+   *   payout1m, payout5m?, ...expirationTimes, ..., ...more data]
+   *
+   * We extract pair name, payout, and OTC status.
+   */
+  function processInstrumentsList(data) {
+    if (!data) return;
+
+    // The data might be the direct array or nested under a key
+    let items = data;
+    if (typeof data === 'object' && !Array.isArray(data)) {
+      // Try to find the array
+      for (const key of ['data', 'instruments', 'list', 'items']) {
+        if (Array.isArray(data[key])) {
+          items = data[key];
+          break;
+        }
+      }
+    }
+
+    if (!Array.isArray(items)) {
+      // Maybe the data itself is a single instrument entry — try as generic asset event
+      processAssetEvent(data);
+      return;
+    }
+
+    // Check if this looks like market-qx.trade format
+    // Each item: [id, symbol, name, type, payout_1m, ...]
+    const minPayout = MF.getConfig('minPayout') || 70;
+    const highPayoutPairs = [];
+
+    for (const item of items) {
+      if (!item) continue;
+
+      // Array-format instrument (market-qx.trade msgpack format)
+      if (Array.isArray(item) && item.length >= 4) {
+        const id = item[0];
+        const symbol = item[1];
+        const name = item[2];
+        const type = item[3];
+        // Payout percentages are at various positions
+        // Typically: [id, symbol, name, type, payout_1m, payout_5m?, ...]
+        const payout1m = typeof item[4] === 'number' ? item[4] : null;
+
+        if (typeof symbol === 'string' && symbol.length > 0) {
+          const pair = name || symbol;
+          const code = MF.codeFromPair(pair);
+          const isOTC = /\(OTC\)/i.test(pair) || /\(OTC\)/i.test(symbol);
+
+          MF.state.allPairs[code] = {
+            pair,
+            code,
+            id,
+            symbol,
+            payout: payout1m ?? 0,
+            otc: isOTC,
+            type: type || 'unknown',
+          };
+
+          if (payout1m !== null && payout1m >= minPayout) {
+            highPayoutPairs.push({ pair, code, payout: payout1m });
+          }
+        }
+      }
+      // Object-format instrument
+      else if (typeof item === 'object' && !Array.isArray(item)) {
+        const pair = extractPair(item);
+        if (pair) {
+          const code = MF.codeFromPair(pair);
+          let payout = null;
+          const payoutKeys = ['payout', 'profit', 'profitPercent', 'payoutPercent', 'p'];
+          for (const k of payoutKeys) {
+            if (item[k] != null) {
+              const n = typeof item[k] === 'number' ? item[k] : parseFloat(item[k]);
+              if (isFinite(n)) { payout = n; break; }
+            }
+          }
+
+          MF.state.allPairs[code] = {
+            pair,
+            code,
+            payout: payout ?? 0,
+            otc: /\(OTC\)/i.test(pair),
+          };
+
+          if (payout !== null && payout >= minPayout) {
+            highPayoutPairs.push({ pair, code, payout });
+          }
+        }
+      }
+    }
+
+    highPayoutPairs.sort((a, b) => b.payout - a.payout);
+    MF.state.highPayoutPairs = highPayoutPairs;
+
+    MF.log('info', `[Scanner] instruments/list: ${Object.keys(MF.state.allPairs).length} pairs found, ${highPayoutPairs.length} high-payout`);
+    MF.bus.emit('scanner:assets', MF.state.allPairs);
+    MF.bus.emit('scanner:highPayout', highPayoutPairs);
+  }
+
+  /**
+   * Extract price from quotes/stream data.
+   * The market-qx.trade quotes/stream data can be:
+   *   - A simple number (the price)
+   *   - An object with price fields
+   *   - An array [price] or [pair, price]
+   */
+  function extractPriceFromStream(data) {
+    if (data == null) return null;
+
+    // Simple number
+    if (typeof data === 'number' && isFinite(data) && data > 0) return data;
+
+    // String that looks like a number
+    if (typeof data === 'string') {
+      const n = parseFloat(data);
+      if (isFinite(n) && n > 0) return n;
+    }
+
+    // Array — last numeric element might be price
+    if (Array.isArray(data)) {
+      // Try last element that looks like a price
+      for (let i = data.length - 1; i >= 0; i--) {
+        const n = typeof data[i] === 'number' ? data[i] : parseFloat(data[i]);
+        if (isFinite(n) && n > 0) return n;
+      }
+    }
+
+    // Object — try common price keys
+    if (typeof data === 'object' && !Array.isArray(data)) {
+      return extractPrice(data);
+    }
+
+    return null;
+  }
+
+  /**
+   * Process history/list/v2 data from market-qx.trade.
+   * Contains candle data for backfilling.
+   */
+  function processHistoryData(data) {
+    if (!data) return;
+
+    let candles = null;
+
+    if (Array.isArray(data)) {
+      candles = data;
+    } else if (typeof data === 'object') {
+      // Try to find candle array
+      for (const key of ['candles', 'data', 'list', 'items', 'result']) {
+        if (Array.isArray(data[key])) {
+          candles = data[key];
+          break;
+        }
+      }
+    }
+
+    if (!candles || !Array.isArray(candles)) return;
+
+    const pairCode = MF.state.activePair || 'HISTORY';
+
+    for (const c of candles) {
+      if (!c) continue;
+
+      // Array format: [time, open, high, low, close, volume?]
+      if (Array.isArray(c) && c.length >= 4) {
+        const ts = typeof c[0] === 'number' ? (c[0] > 1e12 ? c[0] : c[0] * 1000) : Date.now();
+        const candle = {
+          pairCode,
+          t: minuteTs(ts),
+          o: Number(c[1]) || 0,
+          h: Number(c[2]) || 0,
+          l: Number(c[3]) || 0,
+          c: Number(c[4]) || 0,
+          v: Number(c[5]) || 0,
+          tickCount: 0,
+          sioCandle: true,
+        };
+        if (candle.o > 0 && candle.c > 0) {
+          if (!MF.state.candles[pairCode]) MF.state.candles[pairCode] = [];
+          MF.state.candles[pairCode].push(candle);
+          persistCandle(pairCode, candle);
+        }
+      }
+      // Object format
+      else if (typeof c === 'object') {
+        processSioCandle(c, pairCode);
+      }
+    }
+
+    MF.log('info', `[Scanner] history/list/v2: ${candles.length} candles for ${pairCode}`);
+  }
+
+  /**
+   * Process s_balance/list event from market-qx.trade.
+   */
+  function processBalanceEvent(data) {
+    if (!data || typeof data !== 'object') return;
+
+    try {
+      // Extract balance info
+      if (data.liveBalance !== undefined) MF.state.liveBalance = Number(data.liveBalance) || 0;
+      if (data.demoBalance !== undefined) MF.state.demoBalance = Number(data.demoBalance) || 0;
+      MF.bus.emit('scanner:balance', data);
+    } catch (_) {}
+  }
+
+  /**
+   * Process order events from market-qx.trade.
+   */
+  function processOrderEvent(event, data) {
+    if (!data) return;
+
+    try {
+      if (event === 'orders/closed/list' && Array.isArray(data)) {
+        // Record closed trades for self-improvement
+        for (const order of data) {
+          if (order && typeof order === 'object') {
+            MF.bus.emit('scanner:orderClosed', order);
+          }
+        }
+      }
+      MF.bus.emit('scanner:orders', { event, data });
+    } catch (_) {}
+  }
+
+  /**
+   * Process instruments/update event (user switched instrument).
+   */
+  function processInstrumentUpdate(data) {
+    if (!data) return;
+
+    try {
+      // data typically contains {asset: "SYMBOL", period: 60}
+      let pairCode = null;
+      if (typeof data === 'object') {
+        const asset = data.asset || data.symbol || data.instrument || data.pair;
+        if (asset) {
+          pairCode = MF.codeFromPair(asset);
+        }
+      } else if (typeof data === 'string') {
+        pairCode = MF.codeFromPair(data);
+      }
+
+      if (pairCode) {
+        MF.state.activePair = pairCode;
+        MF.log('info', '[Scanner] Instrument switched to:', pairCode);
+        MF.bus.emit('scanner:pairChanged', { pairCode, data });
+      }
+    } catch (_) {}
   }
 
   // ═══════════════════════════════════════════════════════════════════════
