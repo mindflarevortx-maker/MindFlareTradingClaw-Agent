@@ -1,0 +1,283 @@
+/**
+ * popup.css  —  MindFlare TradingClaw Popup Styles
+ *
+ * Dark theme matching the overlay design.
+ * Colors: #1a1d23 bg, #d1d5db text, #34d399 green, #f87171 red, #60a5fa blue.
+ */
+
+/* ── Reset & Base ────────────────────────────────────────────────── */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  width: 320px;
+  min-height: 360px;
+  background: #1a1d23;
+  color: #d1d5db;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-x: hidden;
+  user-select: none;
+}
+
+/* ── Header ──────────────────────────────────────────────────────── */
+
+.mf-popup-header {
+  padding: 12px 14px 10px;
+  background: linear-gradient(180deg, #252830 0%, #1f2228 100%);
+  border-bottom: 1px solid #2d3139;
+}
+
+.mf-popup-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mf-popup-logo {
+  width: 34px; height: 34px;
+  background: linear-gradient(135deg, #1e3a5f, #2563eb);
+  border: 2px solid #3b82f6;
+  border-radius: 8px;
+  color: #60a5fa;
+  font-size: 13px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  letter-spacing: -0.5px;
+  flex-shrink: 0;
+}
+
+.mf-popup-title-wrap {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.mf-popup-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #e5e7eb;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0.2px;
+}
+
+.mf-popup-version {
+  font-size: 10px;
+  color: #6b7280;
+  margin-top: 1px;
+}
+
+/* ── Status Section ──────────────────────────────────────────────── */
+
+.mf-popup-status {
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mf-status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 0;
+}
+
+.mf-status-label {
+  color: #6b7280;
+  font-size: 11px;
+}
+
+.mf-status-value {
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.mf-val-green { color: #34d399 !important; }
+.mf-val-red   { color: #f87171 !important; }
+.mf-val-blue  { color: #60a5fa !important; }
+
+/* ── Divider ─────────────────────────────────────────────────────── */
+
+.mf-popup-divider {
+  border: none;
+  border-top: 1px solid #2d3139;
+  margin: 0 14px;
+}
+
+/* ── Toggle Section ──────────────────────────────────────────────── */
+
+.mf-popup-toggles {
+  padding: 8px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mf-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 0;
+}
+
+.mf-toggle-label {
+  color: #d1d5db;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.mf-toggle {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  cursor: pointer;
+}
+
+.mf-toggle-input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+
+.mf-toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: #374151;
+  border-radius: 10px;
+  transition: background 0.25s ease;
+}
+
+.mf-toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  left: 3px;
+  bottom: 3px;
+  background: #9ca3af;
+  border-radius: 50%;
+  transition: transform 0.25s ease, background 0.25s ease;
+}
+
+.mf-toggle-input:checked + .mf-toggle-slider {
+  background: #1d4ed8;
+}
+
+.mf-toggle-input:checked + .mf-toggle-slider::before {
+  transform: translateX(16px);
+  background: #60a5fa;
+}
+
+/* ── Action Buttons ──────────────────────────────────────────────── */
+
+.mf-popup-actions {
+  padding: 8px 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mf-action-row {
+  display: flex;
+  gap: 6px;
+}
+
+.mf-btn {
+  flex: 1;
+  padding: 7px 12px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+}
+
+.mf-btn:active { transform: scale(0.97); }
+
+.mf-btn-primary {
+  background: #2563eb;
+  color: #fff;
+  border-color: #1d4ed8;
+}
+
+.mf-btn-primary:hover { background: #1d4ed8; }
+
+.mf-btn-secondary {
+  background: #374151;
+  color: #d1d5db;
+  border-color: #4b5563;
+}
+
+.mf-btn-secondary:hover { background: #4b5563; }
+
+.mf-btn-overlay {
+  background: linear-gradient(135deg, #1e3a5f, #1a1d23);
+  color: #60a5fa;
+  border-color: #3b82f6;
+}
+
+.mf-btn-overlay:hover {
+  background: linear-gradient(135deg, #2563eb, #1e3a5f);
+  color: #e5e7eb;
+}
+
+/* ── Button Flash Feedback ───────────────────────────────────────── */
+
+.mf-btn-flash-ok {
+  border-color: #34d399 !important;
+  box-shadow: 0 0 6px rgba(52, 211, 153, 0.35);
+}
+
+.mf-btn-flash-err {
+  border-color: #f87171 !important;
+  box-shadow: 0 0 6px rgba(248, 113, 113, 0.35);
+}
+
+/* ── Footer ──────────────────────────────────────────────────────── */
+
+.mf-popup-footer {
+  padding: 8px 14px 10px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid #2d3139;
+  background: #16181d;
+}
+
+.mf-footer-link {
+  color: #6b7280;
+  font-size: 10.5px;
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.mf-footer-link:hover { color: #60a5fa; }
+
+.mf-footer-sep {
+  color: #2d3139;
+  font-size: 10px;
+}
+
+/* ── Focus & Selection ───────────────────────────────────────────── */
+
+::selection {
+  background: rgba(59, 130, 246, 0.3);
+  color: #e5e7eb;
+}
+
+*:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 1px;
+}
