@@ -8,7 +8,7 @@
 const MF = (() => {
   'use strict';
 
-  const VERSION = '2.1.0';
+  const VERSION = '2.2.0';
 
   // Ollama keys are loaded from chrome.storage at runtime. Configure via Options page.
   const OLLAMA_KEYS_DEFAULT = [];

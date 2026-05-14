@@ -14,7 +14,7 @@
    ═══════════════════════════════════════════════════════════════════ */
 
 const STORAGE_KEY = 'mf_config';
-const VERSION = '2.1.0';
+const VERSION = '2.2.0';
 
 /** Full default config — matches core.js & service-worker.js */
 const DEFAULTS = {

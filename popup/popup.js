@@ -18,8 +18,10 @@ const $toggleMG     = document.getElementById('mf-toggle-martingale');
 const $btnAnalyze   = document.getElementById('mf-btn-analyze');
 const $btnScan      = document.getElementById('mf-btn-scan');
 const $btnOverlay   = document.getElementById('mf-btn-overlay');
+const $btnOptions   = document.getElementById('mf-btn-options');
 const $linkOptions  = document.getElementById('mf-link-options');
 const $linkReload   = document.getElementById('mf-link-reload');
+const $version      = document.getElementById('mf-version');
 
 /* ── Constants ───────────────────────────────────────────────────── */
 
@@ -219,6 +221,7 @@ $toggleMG.addEventListener('change', () => {
 $btnAnalyze.addEventListener('click', handleAnalyze);
 $btnScan.addEventListener('click', handleScan);
 $btnOverlay.addEventListener('click', handleOverlay);
+$btnOptions.addEventListener('click', openOptions);
 $linkOptions.addEventListener('click', openOptions);
 $linkReload.addEventListener('click', reloadTab);
 
@@ -226,6 +229,14 @@ $linkReload.addEventListener('click', reloadTab);
 
 // Initial load
 refreshStatus();
+
+// Set version from manifest
+try {
+  const manifest = chrome.runtime.getManifest();
+  if (manifest && manifest.version && $version) {
+    $version.textContent = 'v' + manifest.version;
+  }
+} catch (_) {}
 
 // Poll every 2 seconds while popup is open
 refreshTimer = setInterval(refreshStatus, REFRESH_MS);

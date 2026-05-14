@@ -3,7 +3,7 @@
   "name": "MindFlareClaw-AGENT",
   "short_name": "MFC Agent",
   "description": "Autonomous trading agent for market-qx.trade with multi-LLM consensus, unlimited historical data, self-improvement, and chat with media support.",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",

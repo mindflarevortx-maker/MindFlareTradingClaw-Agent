@@ -34,10 +34,28 @@
   //   2. Binary frame with msgpack data (the actual payload)
   let _pendingBinaryEvent = null;
 
+  // ── Message queue for late-starting content scripts ───────────────
+  // page-hook runs at document_start but scanner.js (content script)
+  // doesn't register its window.addEventListener('message') until
+  // document_idle. Early WS events would be LOST without this queue.
+  const _msgQueue = window.__MFC_MSG_QUEUE || [];
+  window.__MFC_MSG_QUEUE = _msgQueue;
+
   // ── Helper: post message to content script ────────────────────────
   const post = (type, data) => {
     try {
-      window.postMessage({ __mf: true, type, ...data }, '*');
+      const msg = { __mf: true, type };
+      // Safely spread data without overwriting __mf or type
+      if (data && typeof data === 'object') {
+        for (const [k, v] of Object.entries(data)) {
+          if (k !== '__mf' && k !== 'type') msg[k] = v;
+        }
+      }
+      window.postMessage(msg, '*');
+      // Also queue for late-starting content scripts
+      _msgQueue.push(msg);
+      // Keep queue bounded
+      if (_msgQueue.length > 500) _msgQueue.splice(0, _msgQueue.length - 500);
     } catch (_) {
       // Silently swallow — never break page JS
     }

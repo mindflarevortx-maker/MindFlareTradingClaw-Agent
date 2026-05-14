@@ -1779,7 +1779,17 @@ const Scanner = (() => {
     _running = true;
     _diag.startedAt = Date.now();
 
-    // Attach window message handler
+    // Drain the message queue from page-hook.js (posted before scanner was ready)
+    const queue = window.__MFC_MSG_QUEUE || [];
+    if (queue.length > 0) {
+      MF.log('info', '[Scanner] Draining message queue:', queue.length, 'messages');
+      for (const msg of queue) {
+        onWindowMessage({ data: msg, source: window });
+      }
+      queue.length = 0; // Clear the queue
+    }
+
+    // Attach live window message handler
     _msgHandler = onWindowMessage;
     window.addEventListener('message', _msgHandler);
 

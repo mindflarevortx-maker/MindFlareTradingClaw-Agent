@@ -145,7 +145,10 @@ const LLMClaw = (() => {
    * @param {string} options.model - Model name.
    * @param {number} [options.temperature] - Sampling temperature.
    * @param {number} [options.maxTokens] - Max response tokens.
-   * @param {string} [options.apiKey] - Optional API key override.
+   * @param {string} [options.apiKey] - Optional API key override (single key for primary provider).
+   * @param {object} [options.apiKeys] - Full provider→keys map for all providers.
+   *   Keys from content script take priority over service worker config keys.
+   * @param {string} [options.baseUrl] - Base URL for openai_compat provider.
    * @param {number} [options.timeout] - Request timeout in ms.
    * @returns {Promise<{text: string, provider: string, model: string}>}
    */
@@ -231,7 +234,32 @@ const LLMClaw = (() => {
       maxTokens: Math.max(1, Math.round(maxTokens)),
     };
 
-    // Inject the API key for the chosen provider
+    // Build apiKeys object with ALL configured keys for ALL providers.
+    // This ensures the service worker has the keys even if its own config
+    // is stale or out of sync with the content script's config.
+    const apiKeys = {};
+    for (const [provId, provDef] of Object.entries(PROVIDERS)) {
+      if (provId === 'ollama') {
+        // Ollama uses an array of rotating keys
+        const keys = MF.getConfig('ollamaKeys');
+        const defaults = MF.OLLAMA_KEYS_DEFAULT;
+        const allKeys = (Array.isArray(keys) && keys.length > 0) ? keys : (Array.isArray(defaults) && defaults.length > 0 ? defaults : []);
+        if (allKeys.length > 0) apiKeys.ollama = allKeys;
+      } else if (provDef.keyConfig) {
+        // Single-key providers: also check for multi-key array format
+        const arrayKey = provId + 'Keys'; // e.g., 'openaiKeys', 'openrouterKeys'
+        const arrKeys = MF.getConfig(arrayKey);
+        if (Array.isArray(arrKeys) && arrKeys.length > 0) {
+          apiKeys[provId] = arrKeys;
+        } else {
+          const singleKey = MF.getConfig(provDef.keyConfig);
+          if (singleKey) apiKeys[provId] = [singleKey];
+        }
+      }
+    }
+    opts.apiKeys = apiKeys;
+
+    // Also set the single apiKey for the chosen provider (backward compat)
     const providerDef = PROVIDERS[provider];
     if (providerDef) {
       if (provider === 'ollama') {
@@ -249,8 +277,9 @@ const LLMClaw = (() => {
       opts.baseUrl = MF.getConfig('openaiCompatBaseUrl') || '';
     }
 
-    // Apply user overrides (apiKey, baseUrl, timeout, etc.)
+    // Apply user overrides (apiKey, apiKeys, baseUrl, timeout, etc.)
     if (overrides.apiKey) opts.apiKey = overrides.apiKey;
+    if (overrides.apiKeys) opts.apiKeys = { ...opts.apiKeys, ...overrides.apiKeys };
     if (overrides.baseUrl) opts.baseUrl = overrides.baseUrl;
     if (overrides.timeout) opts.timeout = overrides.timeout;
 

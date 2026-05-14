@@ -158,6 +158,15 @@
 
 ## Version History
 
+### v2.2.0
+- **FIXED (CRITICAL)**: WebSocket message queue — early WS events (connection, instruments, quotes) posted before Scanner starts at `document_idle` are now queued and replayed
+- **FIXED (CRITICAL)**: LLM chat not responding — service worker now properly merges apiKeys from content scripts with config keys; Ollama key fallback bug fixed (was incorrectly falling back to `openaiKey`)
+- **FIXED**: `page-hook.js` `post()` function property collision — `__mf` and `type` keys from data no longer overwrite control markers
+- **IMPROVED**: Chat section styling — new bubble design with distinct user (blue) / assistant (dark) / system (pill) styles
+- **IMPROVED**: Popup panel — extension icon displayed, Settings button added, version auto-detected from manifest
+- **NEW**: Generated extension signature icon (claw + neural network design)
+- **IMPROVED**: Options page API key management verified working with all 11 providers
+
 ### v2.1.0
 - **FIXED**: WebSocket connection — proper Socket.IO v3 binary event handling
 - **FIXED**: market-qx.trade specific event names (quotes/stream, instruments/list, etc.)

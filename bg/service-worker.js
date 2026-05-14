@@ -335,26 +335,50 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const config = await getConfig();
         const provider = msg.options?.provider || config.llmProvider || 'ollama';
         const model = msg.options?.model || config.llmModel || 'gemma4:31b';
-        // Build apiKeys object with both array and single-key formats
-        const apiKeys = {
-          ollama: config.ollamaKeys?.length ? config.ollamaKeys : (config.openaiKey ? [config.openaiKey] : []),
-          openai: config.openaiKeys?.length ? config.openaiKeys : (config.openaiKey ? [config.openaiKey] : []),
-          openrouter: config.openrouterKeys?.length ? config.openrouterKeys : (config.openrouterKey ? [config.openrouterKey] : []),
-          anthropic: config.anthropicKeys?.length ? config.anthropicKeys : (config.anthropicKey ? [config.anthropicKey] : []),
-          gemini: config.geminiKeys?.length ? config.geminiKeys : (config.geminiKey ? [config.geminiKey] : []),
-          grok: config.grokKeys?.length ? config.grokKeys : (config.grokKey ? [config.grokKey] : []),
-          opencode: config.opencodeKeys?.length ? config.opencodeKeys : (config.opencodeKey ? [config.opencodeKey] : []),
-          zia: config.ziaKeys?.length ? config.ziaKeys : (config.ziaKey ? [config.ziaKey] : []),
-          moonshot: config.moonshotKeys?.length ? config.moonshotKeys : (config.moonshotKey ? [config.moonshotKey] : []),
-          qwen: config.qwenKeys?.length ? config.qwenKeys : (config.qwenKey ? [config.qwenKey] : []),
+
+        // Build apiKeys from config (both array and single-key formats)
+        const configApiKeys = {
+          ollama:      config.ollamaKeys?.length      ? config.ollamaKeys      : [],
+          openai:      config.openaiKeys?.length      ? config.openaiKeys      : (config.openaiKey ? [config.openaiKey] : []),
+          openrouter:  config.openrouterKeys?.length  ? config.openrouterKeys  : (config.openrouterKey ? [config.openrouterKey] : []),
+          anthropic:   config.anthropicKeys?.length   ? config.anthropicKeys   : (config.anthropicKey ? [config.anthropicKey] : []),
+          gemini:      config.geminiKeys?.length       ? config.geminiKeys      : (config.geminiKey ? [config.geminiKey] : []),
+          grok:        config.grokKeys?.length         ? config.grokKeys        : (config.grokKey ? [config.grokKey] : []),
+          opencode:    config.opencodeKeys?.length    ? config.opencodeKeys    : (config.opencodeKey ? [config.opencodeKey] : []),
+          zia:         config.ziaKeys?.length          ? config.ziaKeys         : (config.ziaKey ? [config.ziaKey] : []),
+          moonshot:    config.moonshotKeys?.length     ? config.moonshotKeys    : (config.moonshotKey ? [config.moonshotKey] : []),
+          qwen:        config.qwenKeys?.length         ? config.qwenKeys        : (config.qwenKey ? [config.qwenKey] : []),
           openai_compat: config.openaiCompatKeys?.length ? config.openaiCompatKeys : (config.openaiCompatKey ? [config.openaiCompatKey] : []),
         };
+
+        // Merge apiKeys passed from the content script with config keys.
+        // Content-script keys take PRIORITY — they may be fresher if the
+        // user just updated settings and the SW config hasn't reloaded yet.
+        const passedApiKeys = msg.options?.apiKeys;
+        const apiKeys = { ...configApiKeys };
+        if (passedApiKeys && typeof passedApiKeys === 'object') {
+          for (const [prov, keys] of Object.entries(passedApiKeys)) {
+            if (Array.isArray(keys) && keys.length > 0) {
+              apiKeys[prov] = keys;
+            }
+          }
+        }
+
+        // Also check if the content script passed a single apiKey for the
+        // primary provider — ensure it's in the apiKeys array as well.
+        const singleKey = msg.options?.apiKey;
+        if (singleKey && typeof singleKey === 'string' && singleKey.trim()) {
+          if (!apiKeys[provider] || !apiKeys[provider].includes(singleKey)) {
+            apiKeys[provider] = [singleKey, ...(apiKeys[provider] || [])];
+          }
+        }
+
         const fallbackProviders = config.fallbackProviders || DEFAULTS.fallbackProviders;
         const opts = {
           temperature: msg.options?.temperature ?? config.llmTemperature ?? 0.2,
           max_tokens: msg.options?.maxTokens ?? config.llmMaxTokens ?? 600,
           fallbackProviders,
-          baseUrl: config.openaiCompatBaseUrl || undefined,
+          baseUrl: msg.options?.baseUrl || config.openaiCompatBaseUrl || undefined,
         };
 
         const reply = await callLLM({ provider, apiKeys, model, messages: msg.messages || [], opts });
