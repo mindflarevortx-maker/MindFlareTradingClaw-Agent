@@ -132,6 +132,25 @@
       enumerable: true
     });
 
+    // ── Also hook WebSocket.send to capture outgoing messages ──────
+    try {
+      const origSend = OriginalWebSocket.prototype.send;
+      MindFlareWebSocket.prototype.send = function(data) {
+        try {
+          if (typeof data === 'string' && data.length > 0) {
+            window.postMessage({
+              __mf: true,
+              type: 'ws_send',
+              data: data,
+              url: this.url || '',
+              ts: Date.now()
+            }, '*');
+          }
+        } catch (_) {}
+        return origSend.apply(this, arguments);
+      };
+    } catch (_) {}
+
     // ── Also hook XMLHttpRequest for API call observation ──────────
     try {
       const origOpen = XMLHttpRequest.prototype.open;
@@ -145,7 +164,7 @@
 
       XMLHttpRequest.prototype.send = function(body) {
         if (this.__mfUrl && typeof this.__mfUrl === 'string' &&
-            this.__mfUrl.includes('market-qx')) {
+            (this.__mfUrl.includes('market-qx') || this.__mfUrl.includes('qxbroker') || this.__mfUrl.includes('quotex'))) {
           this.addEventListener('load', function() {
             try {
               window.postMessage({
@@ -167,6 +186,34 @@
     } catch (_) {
       // XHR hook is optional — don't break the page
     }
+
+    // ── Hook fetch() for API observation too ─────────────────────
+    try {
+      const origFetch = window.fetch;
+      window.fetch = function(input, init) {
+        const url = typeof input === 'string' ? input : (input?.url || '');
+        if (url && (url.includes('market-qx') || url.includes('qxbroker') || url.includes('quotex'))) {
+          return origFetch.apply(this, arguments).then(response => {
+            try {
+              const cloned = response.clone();
+              cloned.text().then(text => {
+                window.postMessage({
+                  __mf: true,
+                  type: 'fetch_load',
+                  url: url,
+                  method: init?.method || 'GET',
+                  status: response.status,
+                  response: text.substring(0, 50000),
+                  ts: Date.now()
+                }, '*');
+              }).catch(() => {});
+            } catch (_) {}
+            return response;
+          });
+        }
+        return origFetch.apply(this, arguments);
+      };
+    } catch (_) {}
 
     // ── Signal to content script that hook is ready ───────────────
     window.postMessage({
